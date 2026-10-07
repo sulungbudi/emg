@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32 ECG + EMG Monitor</title>
+<style>
+  :root{
+    --bg: #0a1512;
+    --panel: #0f1e19;
+    --panel-line: #1c352c;
+    --trace-ecg: #38e08a;
+    --trace-ecg-glow: rgba(56, 224, 138, 0.35);
+    --trace-emg: #e8a545;
+    --trace-emg-glow: rgba(232, 165, 69, 0.35);
+    --text: #d8e8e0;
+    --text-dim: #7d998e;
+    --red: #e05a4f;
+    --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+    --sans: "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--panel-line);
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  header h1 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.2px;
+  }
+
+  header h1 span {
+    color: var(--text-dim);
+    font-weight: 400;
+  }
+
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: background 0.2s ease;
+  }
+
+  .dot.live { background: var(--trace-ecg); box-shadow: 0 0 8px var(--trace-ecg-glow); }
+  .dot.warn { background: var(--trace-emg); }
+
+  button {
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+    padding: 9px 18px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-line);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  button:hover { border-color: var(--trace-ecg); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  button.small {
+    padding: 5px 12px;
+    font-size: 12px;
+  }
+
+  main {
+    flex: 1;
+    display: flex;
+    gap: 20px;
+    padding: 20px 24px 28px;
+    flex-wrap: wrap;
+  }
+
+  .channels {
+    flex: 1 1 560px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-width: 320px;
+  }
+
+  .trace-panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    border-radius: 10px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    min-height: 240px;
+  }
+
+  .trace-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .trace-panel .label {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .trace-panel .label strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .gain-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .gain-control input[type="range"] {
+    width: 100px;
+  }
+
+  .gain-control.ecg input[type="range"] { accent-color: var(--trace-ecg); }
+  .gain-control.emg input[type="range"] { accent-color: var(--trace-emg); }
+
+  .gain-value {
+    font-family: var(--mono);
+    color: var(--text);
+    min-width: 34px;
+    display: inline-block;
+  }
+
+  .auto-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: 6px;
+    cursor: pointer;
+  }
+
+  .auto-toggle input { cursor: pointer; }
+  .gain-control.ecg .auto-toggle input { accent-color: var(--trace-ecg); }
+  .gain-control.emg .auto-toggle input { accent-color: var(--trace-emg); }
+
+  canvas {
+    width: 100%;
+    height: 100%;
+    border-radius: 6px;
+    background: #081410;
+  }
+
+  .side {
+    flex: 0 1 250px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    border-radius: 10px;
+    padding: 18px;
+  }
+
+  .card .label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+
+  .bpm-value {
+    font-family: var(--mono);
+    font-size: 44px;
+    font-weight: 600;
+    color: var(--trace-ecg);
+    line-height: 1;
+  }
+
+  .bpm-unit {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  .lead-value {
+    font-family: var(--mono);
+    font-size: 16px;
+    margin-top: 4px;
+  }
+
+  .lead-value.ok { color: var(--trace-ecg); }
+  .lead-value.off { color: var(--red); }
+
+  .activation-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .activation-header button {
+    color: var(--text-dim);
+  }
+
+  .activation-bar-track {
+    width: 100%;
+    height: 14px;
+    border-radius: 7px;
+    background: #081410;
+    border: 1px solid var(--panel-line);
+    margin-top: 10px;
+    overflow: hidden;
+  }
+
+  .activation-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--trace-emg);
+    box-shadow: 0 0 8px var(--trace-emg-glow);
+    transition: width 0.08s linear;
+  }
+
+  .activation-readout {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 8px;
+  }
+
+  .instructions {
+    font-size: 13px;
+    color: var(--text-dim);
+    line-height: 1.6;
+  }
+
+  .instructions code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: #081410;
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  footer {
+    padding: 10px 24px 18px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ESP32 ECG + EMG Monitor <span>&mdash; AD8232 &amp; AD8221 via BLE</span></h1>
+  <div class="status">
+    <div id="statusDot" class="dot"></div>
+    <span id="statusText">Belum terhubung</span>
+    <button id="connectBtn">Hubungkan perangkat</button>
+  </div>
+</header>
+
+<main>
+  <div class="channels">
+
+    <div class="trace-panel">
+      <div class="trace-header">
+        <div class="label"><strong>ECG</strong> &mdash; AD8232</div>
+        <div class="gain-control ecg">
+          <label for="ecgGainSlider">Amplitudo</label>
+          <input type="range" id="ecgGainSlider" min="0.5" max="6" step="0.1" value="2">
+          <span class="gain-value" id="ecgGainValue">2.0&times;</span>
+          <label class="auto-toggle">
+            <input type="checkbox" id="ecgAutoGain" checked>
+            Otomatis
+          </label>
+        </div>
+      </div>
+      <canvas id="ecgCanvas"></canvas>
+    </div>
+
+    <div class="trace-panel">
+      <div class="trace-header">
+        <div class="label"><strong>EMG</strong> &mdash; AD8221 (Muscle Sensor v3.0)</div>
+        <div class="gain-control emg">
+          <label for="emgGainSlider">Amplitudo</label>
+          <input type="range" id="emgGainSlider" min="0.5" max="6" step="0.1" value="2">
+          <span class="gain-value" id="emgGainValue">2.0&times;</span>
+          <label class="auto-toggle">
+            <input type="checkbox" id="emgAutoGain" checked>
+            Otomatis
+          </label>
+        </div>
+      </div>
+      <canvas id="emgCanvas"></canvas>
+    </div>
+
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <div class="label">Perkiraan detak jantung</div>
+      <div class="bpm-value" id="bpmValue">&mdash;</div>
+      <div class="bpm-unit">BPM</div>
+    </div>
+
+    <div class="card">
+      <div class="label">Status elektroda ECG</div>
+      <div class="lead-value ok" id="leadValue">Menunggu data</div>
+    </div>
+
+    <div class="card">
+      <div class="activation-header">
+        <div class="label">Aktivasi otot (EMG)</div>
+        <button class="small" id="resetCalibBtn">Reset kalibrasi</button>
+      </div>
+      <div class="activation-bar-track">
+        <div class="activation-bar-fill" id="activationBar"></div>
+      </div>
+      <div class="activation-readout" id="activationReadout">0%</div>
+    </div>
+
+    <div class="card instructions">
+      Buka halaman ini lewat Chrome atau Edge (desktop atau Android), lalu
+      klik <strong>Hubungkan perangkat</strong> dan pilih
+      <code>ESP32-ECG</code> dari daftar. Web Bluetooth memerlukan koneksi
+      HTTPS atau membuka file ini langsung dari <code>localhost</code>.
+      Tekan <strong>Reset kalibrasi</strong> sesaat setelah kontraksi otot
+      terkuat Anda, supaya bar aktivasi terkalibrasi ke rentang yang wajar.
+    </div>
+  </div>
+</main>
+
+<footer>
+  Service UUID: 6e400001-b5a3-f393-e0a9-e50e24dcca9e
+</footer>
+
+<script>
+  const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+  const CHAR_UUID    = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+  const connectBtn = document.getElementById("connectBtn");
+  const statusDot = document.getElementById("statusDot");
+  const statusText = document.getElementById("statusText");
+  const bpmValue = document.getElementById("bpmValue");
+  const leadValue = document.getElementById("leadValue");
+  const activationBar = document.getElementById("activationBar");
+  const activationReadout = document.getElementById("activationReadout");
+  const resetCalibBtn = document.getElementById("resetCalibBtn");
+
+  const MAX_POINTS = 900; // panjang jendela tampilan per kanal
+
+  // ---------- Pabrik kanal: dipakai utk ECG maupun EMG supaya logikanya tidak dobel ----------
+  function createChannel(canvasId, sliderId, valueId, autoId, traceColorVar, glowColorVar) {
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext("2d");
+    const slider = document.getElementById(sliderId);
+    const valueLabel = document.getElementById(valueId);
+    const autoToggle = document.getElementById(autoId);
+
+    const ch = {
+      canvas, ctx, slider, valueLabel, autoToggle,
+      traceColorVar, glowColorVar,
+      trace: new Array(MAX_POINTS).fill(2048),
+      writeIndex: 0,
+      manualGain: parseFloat(slider.value),
+      autoGain: true,
+      runningMin: 2048,
+      runningMax: 2048,
+      smoothBuf: [2048, 2048, 2048],
+      smoothIdx: 0,
+    };
+
+    slider.addEventListener("input", () => {
+      ch.manualGain = parseFloat(slider.value);
+      valueLabel.textContent = ch.manualGain.toFixed(1) + "\u00d7";
+    });
+    autoToggle.addEventListener("change", () => {
+      ch.autoGain = autoToggle.checked;
+      slider.disabled = ch.autoGain;
+    });
+    slider.disabled = ch.autoGain;
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const cssW = rect.width - 32;
+      const cssH = rect.height - 64;
+      canvas.style.width = cssW + "px";
+      canvas.style.height = cssH + "px";
+      canvas.width = cssW * dpr;
+      canvas.height = cssH * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ch.cssWidth = cssW;
+      ch.cssHeight = cssH;
+    }
+    window.addEventListener("resize", resize);
+    resize();
+    ch.resize = resize;
+
+    return ch;
+  }
+
+  const ecgCh = createChannel("ecgCanvas", "ecgGainSlider", "ecgGainValue", "ecgAutoGain",
+    "--trace-ecg", "--trace-ecg-glow");
+  const emgCh = createChannel("emgCanvas", "emgGainSlider", "emgGainValue", "emgAutoGain",
+    "--trace-emg", "--trace-emg-glow");
+
+  function smoothChannel(ch, value) {
+    ch.smoothBuf[ch.smoothIdx] = value;
+    ch.smoothIdx = (ch.smoothIdx + 1) % ch.smoothBuf.length;
+    return ch.smoothBuf.reduce((a, b) => a + b, 0) / ch.smoothBuf.length;
+  }
+
+  function drawGrid(ctx, w, h) {
+    const small = 8;
+    const bigEvery = 5;
+    for (let x = 0, i = 0; x <= w; x += small, i++) {
+      ctx.beginPath();
+      ctx.strokeStyle = (i % bigEvery === 0) ? "rgba(216, 232, 224, 0.10)" : "rgba(216, 232, 224, 0.045)";
+      ctx.lineWidth = (i % bigEvery === 0) ? 1 : 0.5;
+      ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+    for (let y = 0, i = 0; y <= h; y += small, i++) {
+      ctx.beginPath();
+      ctx.strokeStyle = (i % bigEvery === 0) ? "rgba(216, 232, 224, 0.10)" : "rgba(216, 232, 224, 0.045)";
+      ctx.lineWidth = (i % bigEvery === 0) ? 1 : 0.5;
+      ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+  }
+
+  function drawChannel(ch) {
+    const { ctx } = ch;
+    const w = ch.cssWidth, h = ch.cssHeight;
+    ctx.clearRect(0, 0, w, h);
+    drawGrid(ctx, w, h);
+
+    const baseline = (ch.runningMin + ch.runningMax) / 2;
+    const span = Math.max(ch.runningMax - ch.runningMin, 40);
+    const pixelsPerUnit = ch.autoGain
+      ? (h * 0.8) / span
+      : ch.manualGain * (h / 900);
+    const midY = h / 2;
+
+    const style = getComputedStyle(document.documentElement);
+    ctx.beginPath();
+    ctx.strokeStyle = style.getPropertyValue(ch.traceColorVar);
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.shadowColor = style.getPropertyValue(ch.glowColorVar);
+    ctx.shadowBlur = 7;
+
+    for (let i = 0; i < MAX_POINTS; i++) {
+      const idx = (ch.writeIndex + i) % MAX_POINTS;
+      const val = ch.trace[idx];
+      const x = (i / MAX_POINTS) * w;
+      const y = midY - (val - baseline) * pixelsPerUnit;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(216, 232, 224, 0.12)";
+    ctx.lineWidth = 1;
+    ctx.moveTo(0, midY); ctx.lineTo(w, midY); ctx.stroke();
+  }
+
+  function renderLoop() {
+    drawChannel(ecgCh);
+    drawChannel(emgCh);
+    requestAnimationFrame(renderLoop);
+  }
+  requestAnimationFrame(renderLoop);
+
+  function updateRunningRange(ch) {
+    let mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < MAX_POINTS; i++) {
+      if (ch.trace[i] < mn) mn = ch.trace[i];
+      if (ch.trace[i] > mx) mx = ch.trace[i];
+    }
+    ch.runningMin = mn;
+    ch.runningMax = mx;
+  }
+
+  // ---------- ECG: deteksi puncak R adaptif untuk estimasi BPM ----------
+  let lastPeakTime = null;
+  let bpmHistory = [];
+  const REFRACTORY_MS = 280;
+  let risingEdgeArmed = true;
+
+  function pushEcgSample(rawValue, leadOff) {
+    const value = smoothChannel(ecgCh, rawValue);
+    ecgCh.trace[ecgCh.writeIndex] = value;
+    ecgCh.writeIndex = (ecgCh.writeIndex + 1) % MAX_POINTS;
+    updateRunningRange(ecgCh);
+
+    if (leadOff) return;
+
+    const threshold = ecgCh.runningMin + (ecgCh.runningMax - ecgCh.runningMin) * 0.65;
+    const resetLevel = ecgCh.runningMin + (ecgCh.runningMax - ecgCh.runningMin) * 0.45;
+
+    const now = performance.now();
+    if (value > threshold && risingEdgeArmed) {
+      risingEdgeArmed = false;
+      if (lastPeakTime !== null) {
+        const interval = now - lastPeakTime;
+        if (interval > REFRACTORY_MS) {
+          const bpm = 60000 / interval;
+          if (bpm > 30 && bpm < 220) {
+            bpmHistory.push(bpm);
+            if (bpmHistory.length > 5) bpmHistory.shift();
+            const avg = bpmHistory.reduce((a, b) => a + b, 0) / bpmHistory.length;
+            bpmValue.textContent = Math.round(avg);
+          }
+          lastPeakTime = now;
+        }
+      } else {
+        lastPeakTime = now;
+      }
+    }
+    if (value < resetLevel) risingEdgeArmed = true;
+  }
+
+  // ---------- EMG: envelope (rectify + smooth) untuk meter aktivasi otot ----------
+  let emgEnvelope = 0;
+  const EMG_ENV_ALPHA = 0.08; // kecepatan respons meter (makin besar = makin cepat tapi makin "gelisah")
+  let emgCeiling = 60; // kalibrasi otomatis, bisa di-reset lewat tombol
+
+  resetCalibBtn.addEventListener("click", () => {
+    emgCeiling = 60;
+  });
+
+  function pushEmgSample(rawValue) {
+    const value = smoothChannel(emgCh, rawValue);
+    emgCh.trace[emgCh.writeIndex] = value;
+    emgCh.writeIndex = (emgCh.writeIndex + 1) % MAX_POINTS;
+    updateRunningRange(emgCh);
+
+    const deviation = Math.abs(value - 2048);
+    emgEnvelope += EMG_ENV_ALPHA * (deviation - emgEnvelope);
+
+    // ceiling naik cepat kalau ada kontraksi baru yg lebih kuat, turun pelan
+    // supaya meter tetap relevan kalau posisi elektroda/usaha berubah
+    emgCeiling = Math.max(emgEnvelope, emgCeiling * 0.998);
+
+    const percent = Math.min(100, Math.round((emgEnvelope / emgCeiling) * 100));
+    activationBar.style.width = percent + "%";
+    activationReadout.textContent = percent + "%  (raw: " + Math.round(emgEnvelope) + ")";
+  }
+
+  function handleNotification(event) {
+    const dv = event.target.value; // DataView
+    const leadOff = dv.getUint8(0) === 1;
+    const count = dv.getUint8(1);
+
+    if (leadOff) {
+      leadValue.textContent = "Elektroda lepas";
+      leadValue.className = "lead-value off";
+    } else {
+      leadValue.textContent = "Terpasang baik";
+      leadValue.className = "lead-value ok";
+    }
+
+    for (let i = 0; i < count; i++) {
+      const ecgSample = dv.getUint16(2 + i * 4, true);     // little-endian
+      const emgSample = dv.getUint16(2 + i * 4 + 2, true); // little-endian
+      pushEcgSample(ecgSample, leadOff);
+      pushEmgSample(emgSample);
+    }
+  }
+
+  async function connect() {
+    try {
+      statusText.textContent = "Mencari perangkat...";
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ name: "ESP32-ECG" }],
+        optionalServices: [SERVICE_UUID]
+      });
+
+      statusText.textContent = "Menghubungkan...";
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      const characteristic = await service.getCharacteristic(CHAR_UUID);
+
+      await characteristic.startNotifications();
+      characteristic.addEventListener("characteristicvaluechanged", handleNotification);
+
+      statusDot.className = "dot live";
+      statusText.textContent = "Terhubung ke " + device.name;
+      connectBtn.textContent = "Terhubung";
+      connectBtn.disabled = true;
+
+      device.addEventListener("gattserverdisconnected", () => {
+        statusDot.className = "dot";
+        statusText.textContent = "Terputus";
+        connectBtn.textContent = "Hubungkan perangkat";
+        connectBtn.disabled = false;
+      });
+    } catch (err) {
+      statusDot.className = "dot warn";
+      statusText.textContent = "Gagal: " + err.message;
+      console.error(err);
+    }
+  }
+
+  connectBtn.addEventListener("click", connect);
+
+  if (!navigator.bluetooth) {
+    statusText.textContent = "Browser ini tidak mendukung Web Bluetooth";
+    connectBtn.disabled = true;
+  }
+</script>
+
+</body>
+</html>
