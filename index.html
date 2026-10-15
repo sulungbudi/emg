@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EMG BLE Monitor</title>
+<style>
+  :root {
+    --bg: #e9eef2;
+    --panel: #ffffff;
+    --ink: #16222e;
+    --muted: #5b6b79;
+    --line: #c9d3dc;
+    --trace: #1f3fbf;
+    --warn: #d9481c;
+    --ok: #17803d;
+    --radius: 6px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; }
+  body { padding: 16px; max-width: 1200px; margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  h1 { font-size: 1.25rem; margin: 0; font-weight: 600; }
+  .sub { color: var(--muted); font-size: .85rem; margin-top: 2px; }
+  .conn { display: flex; align-items: center; gap: 12px; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: .9rem; color: var(--muted); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+  .dot.on { background: var(--ok); }
+  button { font: inherit; padding: 8px 14px; border-radius: var(--radius); border: 1px solid var(--ink);
+    background: var(--panel); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--ink); color: #fff; }
+  button:hover { filter: brightness(.95); }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--trace); outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.rec { border-color: var(--warn); color: var(--warn); }
+  button.rec.active { background: var(--warn); color: #fff; }
+
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; }
+  canvas { width: 100%; height: 360px; display: block; }
+
+  .readouts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+  .ro { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
+  .ro .k { font-size: .8rem; color: var(--muted); }
+  .ro .v { font-size: 1.6rem; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .ro .u { font-size: .85rem; color: var(--muted); font-weight: 400; margin-left: 4px; }
+  .ro.state .v { font-size: 1.3rem; }
+  .ro.state.active { border-color: var(--warn); }
+  .ro.state.active .v { color: var(--warn); }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: center; margin-top: 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; }
+  .controls label { display: flex; align-items: center; gap: 8px; font-size: .9rem; }
+  select, input[type=range] { font: inherit; }
+  .thr-val { min-width: 4.5ch; font-variant-numeric: tabular-nums; }
+  .msg { margin-top: 12px; color: var(--warn); font-size: .9rem; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>EMG BLE Monitor</h1>
+    <div class="sub">Muscle Sensor v3.0 &rarr; ESP32 &rarr; Web Bluetooth</div>
+  </div>
+  <div class="conn">
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Belum terhubung</span></div>
+    <button class="primary" id="btnConnect">Hubungkan perangkat</button>
+    <button id="btnDisconnect" disabled>Putuskan</button>
+  </div>
+</header>
+
+<div class="stage"><canvas id="plot" aria-label="Grafik sinyal EMG"></canvas></div>
+
+<div class="readouts">
+  <div class="ro"><div class="k">Sekarang</div><div class="v"><span id="roNow">–</span><span class="u">mV</span></div></div>
+  <div class="ro"><div class="k">Rata-rata 1 detik</div><div class="v"><span id="roMean">–</span><span class="u">mV</span></div></div>
+  <div class="ro"><div class="k">RMS 1 detik</div><div class="v"><span id="roRms">–</span><span class="u">mV</span></div></div>
+  <div class="ro"><div class="k">Puncak dalam jendela</div><div class="v"><span id="roPeak">–</span><span class="u">mV</span></div></div>
+  <div class="ro"><div class="k">Laju sampel</div><div class="v"><span id="roRate">–</span><span class="u">Hz</span></div></div>
+  <div class="ro state" id="roState"><div class="k">Otot</div><div class="v" id="roStateText">–</div></div>
+</div>
+
+<div class="controls">
+  <label>Jendela waktu
+    <select id="selWindow">
+      <option value="5">5 detik</option>
+      <option value="10" selected>10 detik</option>
+      <option value="20">20 detik</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="chkAuto"> Skala otomatis</label>
+  <label>Ambang kontraksi
+    <input type="range" id="rngThr" min="50" max="3000" step="10" value="500">
+    <span class="thr-val" id="thrVal">500 mV</span>
+  </label>
+  <button id="btnPause">Jeda tampilan</button>
+  <button id="btnClear">Bersihkan</button>
+  <button class="rec" id="btnRec">Mulai rekam</button>
+  <span class="sub" id="recInfo"></span>
+</div>
+<div class="msg" id="msg"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---- Harus sama dengan firmware ----
+  const SERVICE_UUID = '6e2f0001-5a1d-4c3b-9e0a-4d5b7c8a9f10';
+  const CHAR_UUID    = '6e2f0002-5a1d-4c3b-9e0a-4d5b7c8a9f10';
+  const FS = 200;                 // Hz
+  const MAX_SEC = 20;
+  const CAP = FS * MAX_SEC;
+  const FULL_SCALE_MV = 3300;
+
+  // ---- Elemen ----
+  const $ = id => document.getElementById(id);
+  const canvas = $('plot'), ctx = canvas.getContext('2d');
+  const el = {
+    dot: $('dot'), statusText: $('statusText'), msg: $('msg'),
+    btnConnect: $('btnConnect'), btnDisconnect: $('btnDisconnect'),
+    btnPause: $('btnPause'), btnClear: $('btnClear'), btnRec: $('btnRec'), recInfo: $('recInfo'),
+    selWindow: $('selWindow'), chkAuto: $('chkAuto'), rngThr: $('rngThr'), thrVal: $('thrVal'),
+    roNow: $('roNow'), roMean: $('roMean'), roRms: $('roRms'), roPeak: $('roPeak'),
+    roRate: $('roRate'), roState: $('roState'), roStateText: $('roStateText'),
+  };
+
+  // ---- State ----
+  const buf = new Float32Array(CAP);
+  let head = 0, count = 0, totalSamples = 0;
+  let device = null, characteristic = null;
+  let paused = false, recording = false, recRows = [];
+  let rateCounter = 0, rateValue = 0, rateStamp = performance.now();
+
+  const push = v => {
+    buf[head] = v; head = (head + 1) % CAP;
+    if (count < CAP) count++;
+    totalSamples++; rateCounter++;
+    if (recording) recRows.push([(totalSamples / FS).toFixed(3), v]);
+  };
+  // ambil n sampel terakhir (urut lama -> baru)
+  const lastN = n => {
+    n = Math.min(n, count);
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) out[i] = buf[(head - n + i + CAP) % CAP];
+    return out;
+  };
+
+  // ---- BLE ----
+  const setStatus = (text, on) => {
+    el.statusText.textContent = text;
+    el.dot.classList.toggle('on', !!on);
+  };
+  const showMsg = t => { el.msg.textContent = t || ''; };
+
+  function onData(ev) {
+    const dv = ev.target.value;
+    for (let i = 0; i + 1 < dv.byteLength; i += 2) push(dv.getUint16(i, true));
+  }
+
+  async function connect() {
+    showMsg('');
+    if (!navigator.bluetooth) {
+      showMsg('Browser ini tidak mendukung Web Bluetooth. Gunakan Chrome atau Edge (desktop/Android) lewat localhost atau HTTPS.');
+      return;
+    }
+    try {
+      setStatus('Mencari perangkat…', false);
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SERVICE_UUID] }],
+      });
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+      setStatus('Menghubungkan…', false);
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      characteristic = await service.getCharacteristic(CHAR_UUID);
+      characteristic.addEventListener('characteristicvaluechanged', onData);
+      await characteristic.startNotifications();
+      setStatus('Terhubung: ' + (device.name || 'EMG'), true);
+      el.btnConnect.disabled = true;
+      el.btnDisconnect.disabled = false;
+    } catch (err) {
+      setStatus('Belum terhubung', false);
+      if (err && err.name !== 'NotFoundError') showMsg('Gagal terhubung: ' + err.message);
+    }
+  }
+
+  function onDisconnected() {
+    setStatus('Terputus', false);
+    el.btnConnect.disabled = false;
+    el.btnDisconnect.disabled = true;
+    if (recording) toggleRecord();
+    rateValue = 0;
+  }
+
+  function disconnect() {
+    if (device && device.gatt.connected) device.gatt.disconnect();
+  }
+
+  // ---- Kontrol ----
+  el.btnConnect.onclick = connect;
+  el.btnDisconnect.onclick = disconnect;
+  el.btnPause.onclick = () => {
+    paused = !paused;
+    el.btnPause.textContent = paused ? 'Lanjutkan tampilan' : 'Jeda tampilan';
+  };
+  el.btnClear.onclick = () => { head = 0; count = 0; };
+  el.rngThr.oninput = () => { el.thrVal.textContent = el.rngThr.value + ' mV'; };
+
+  function toggleRecord() {
+    if (!recording) {
+      recRows = []; recording = true;
+      el.btnRec.textContent = 'Hentikan & simpan CSV';
+      el.btnRec.classList.add('active');
+    } else {
+      recording = false;
+      el.btnRec.textContent = 'Mulai rekam';
+      el.btnRec.classList.remove('active');
+      if (recRows.length) saveCsv();
+      el.recInfo.textContent = '';
+    }
+  }
+  el.btnRec.onclick = toggleRecord;
+
+  function saveCsv() {
+    const csv = 'waktu_s,emg_mV\n' + recRows.map(r => r.join(',')).join('\n') + '\n';
+    const d = new Date(), p = n => String(n).padStart(2, '0');
+    const name = `emg_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.csv`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = name; a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  // ---- Gambar ----
+  function niceStep(range) {
+    const steps = [50, 100, 200, 250, 500, 1000];
+    return steps.find(s => range / s <= 8) || 1000;
+  }
+
+  function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const winSec = +el.selWindow.value, n = winSec * FS;
+    const data = lastN(n);
+    const padL = 52, padR = 10, padT = 10, padB = 24;
+    const pw = w - padL - padR, ph = h - padT - padB;
+
+    let yMax = FULL_SCALE_MV;
+    if (el.chkAuto.checked && data.length) {
+      let m = 0; for (const v of data) if (v > m) m = v;
+      yMax = Math.max(200, m * 1.15);
+    }
+    const X = i => padL + (pw * (n - data.length + i)) / (n - 1);
+    const Y = v => padT + ph * (1 - Math.min(v, yMax) / yMax);
+
+    // grid
+    ctx.font = '12px "IBM Plex Sans", system-ui, sans-serif';
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
+    const ys = niceStep(yMax);
+    ctx.strokeStyle = '#c9d3dc'; ctx.fillStyle = '#5b6b79'; ctx.lineWidth = 1;
+    for (let v = 0; v <= yMax; v += ys) {
+      const y = Math.round(Y(v)) + .5;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillText(v, padL - 6, y);
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (let s = 0; s <= winSec; s += (winSec <= 5 ? 1 : 2)) {
+      const x = Math.round(padL + pw * (s / winSec)) + .5;
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + ph); ctx.stroke();
+      ctx.fillText('-' + (winSec - s) + ' s', x, padT + ph + 6);
+    }
+    ctx.save(); ctx.translate(12, padT + ph / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.fillText('mV', 0, -6); ctx.restore();
+
+    // ambang
+    const thr = +el.rngThr.value;
+    if (thr <= yMax) {
+      ctx.strokeStyle = '#d9481c'; ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(padL, Y(thr)); ctx.lineTo(w - padR, Y(thr)); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // jejak
+    if (data.length > 1) {
+      ctx.strokeStyle = '#1f3fbf'; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      data.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)));
+      ctx.stroke();
+    }
+  }
+
+  function updateReadouts() {
+    const now = performance.now();
+    if (now - rateStamp >= 1000) {
+      rateValue = Math.round(rateCounter * 1000 / (now - rateStamp));
+      rateCounter = 0; rateStamp = now;
+    }
+    el.roRate.textContent = rateValue || '–';
+    if (!count) return;
+
+    const sec = lastN(FS);
+    let sum = 0, sq = 0;
+    for (const v of sec) { sum += v; sq += v * v; }
+    const mean = sum / sec.length, rms = Math.sqrt(sq / sec.length);
+    let peak = 0; for (const v of lastN(+el.selWindow.value * FS)) if (v > peak) peak = v;
+
+    const recent = lastN(20);                       // 100 ms
+    const recentMean = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const active = recentMean > +el.rngThr.value;
+
+    el.roNow.textContent = Math.round(recent[recent.length - 1]);
+    el.roMean.textContent = mean.toFixed(0);
+    el.roRms.textContent = rms.toFixed(0);
+    el.roPeak.textContent = Math.round(peak);
+    el.roState.classList.toggle('active', active);
+    el.roStateText.textContent = active ? 'Berkontraksi' : 'Istirahat';
+    if (recording) el.recInfo.textContent = `Merekam: ${(recRows.length / FS).toFixed(1)} s`;
+  }
+
+  function frame() {
+    if (!paused) draw();
+    updateReadouts();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  window.addEventListener('beforeunload', disconnect);
+})();
+</script>
+</body>
+</html>
